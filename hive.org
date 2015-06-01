@@ -1,0 +1,247 @@
+* Hive Commands
+
+  Create the table with user, timestamp, country:
+
+  insert overwrite table userPhotoLoc
+  select owner, date_taken, split(place_url,'/')[1] from photo p join share.place q on p.place_id=q.place_id and owner='37996594299@N01' sort by date_taken asc;
+
+  create table userPhotoLoc (user STRING, taken TIMESTAMP, country STRING) ROW FORMAT
+  DELIMITED FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n' STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/userPhotoLoc';
+
+  hadoop jar /usr/lib/hadoop-mapreduce/hadoop-streaming.jar -D mapred.map.tasks=1 -file ~/mapper.py -mapper ~/mapper.py -file ~/reducer.py -reducer ~/reducer.py -input place.txt -output test
+
+
+
+create table owner_stay (owner string, date_taken string, country string)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
+
+#+begin_src sql :hql_create
+  create external table if not exists rsiv5112.photos
+  (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
+  ROW FORMAT DELIMITED
+  FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+  LOCATION '/share/small/';
+#+end_src
+
+
+#+begin_src sql :hql
+  add file identity_mapper.py;
+  add file reducer.py;
+  from (
+  from
+  (select owner, datetaken, split(place_url,'/')[1] as country from rsiv5112.photos p join share.place q on p.placeid=q.place_id) country_data
+  select transform(owner, datetaken, country) using 'python identity_mapper.py'
+  as (owner, date_taken, country) distribute by owner sort by owner, date_taken asc
+  ) owner_info
+  INSERT OVERWRITE TABLE rsiv5112.owner_stay
+  select transform(owner_info.owner, owner_info.date_taken, owner_info.country)
+  using 'python reducer.py' as (owner, days, country);
+#+end_src
+
+#+begin_src sql :mapper
+  #!/usr/bin/env python
+
+  import sys
+
+  for line in sys.stdin:
+      line = line.strip()
+      print line
+#+end_src
+
+
+#+begin_src python :reducer
+  #!/usr/bin/env python
+
+  import sys
+  import time
+  import datetime
+
+
+
+  def display_user(user, stay_info):
+      str_list = []
+      for country_name, stay_list in stay_info.iteritems():
+          str_list.append("{0}({1},{2},{3},{4},{5})".format(country_name, len(stay_list), max(stay_list), min(stay_list), sum(stay_list)/len(stay_list), sum(stay_list)))
+      print("{0}\t{1}".format(user, ",".join(sorted(str_list))))
+
+  # input comes from STDIN (standard input)
+
+  current_country = ""
+  current_owner = ""
+  start_time = datetime.datetime.fromtimestamp(0)
+  end_time = datetime.datetime.fromtimestamp(0)
+
+  country_stay = {}
+
+  for line in sys.stdin:
+      # remove leading and trailing whitespace
+      line = line.strip()
+      # split the line into words
+      owner, taken_str, country = line.split('\t')
+
+      # change timestamp in string to time
+      try:
+          taken = datetime.datetime.strptime(taken_str, "%Y-%m-%d %H:%M:%S")
+      except:
+          continue
+
+      if (owner != current_owner) and (current_owner != ""):
+          stay_list = country_stay.get(current_country, [])
+          stay_list.append((end_time - start_time).total_seconds()/(24*3600))
+          country_stay[current_country] = stay_list
+          display_user(current_owner, country_stay)
+          country_stay = {}
+          current_owner = owner
+          current_country = country
+          start_time = taken
+          end_time = taken
+      elif (owner == current_owner) and (country == current_country):
+          end_time = taken
+      elif (owner == current_owner) and (country != current_country):
+          stay_list = country_stay.get(current_country, [])
+          stay_list.append((taken - start_time).total_seconds()/(24*3600))
+          country_stay[current_country] = stay_list
+          current_country = country
+          start_time = taken
+          end_time = taken
+      elif (current_owner == ""):
+          current_owner = owner
+          current_country = country
+          start_time = taken
+          end_time = taken
+
+  # Final Entry
+  stay_list = country_stay.get(current_country, [])
+  stay_list.append((taken - start_time).total_seconds()/(24*3600))
+  country_stay[current_country] = stay_list
+  display_user(current_owner, country_stay)
+
+#+end_src
+
+#+begin_src python :test
+  #!/usr/bin/env python
+
+  import sys
+  import time
+  import datetime
+
+  for line in sys.stdin:
+      line = line.strip()
+      if line != "":
+          user, date, country = line.split('\t')
+          print('{0}\t{1}\n'.format(user,country))
+      else:
+          break
+
+#+end_src
+
+
+#+begin_src python :spark
+  from __future__ import division
+  from pyspark import SparkContext
+  from operator import itemgetter
+  import datetime
+  import time
+
+  def extract_photos_info(line):
+      (ign, owner, ign, date_taken, location_id, ign) = line.split('\t')
+      return (location_id, (owner, date_taken))
+
+  def extract_place_info(line):
+       (location_id, ign, ign, ign, ign, ign, country) = line.split('\t')
+       return (location_id, country.split('/')[1])
+
+  def user_stay_info(info):
+      sorted_info = sorted(info[1], key=lambda x: x[0])
+      current_country = ""
+      current_owner = info[0]
+      start_time = datetime.datetime.fromtimestamp(0)
+      end_time = datetime.datetime.fromtimestamp(0)
+      output = []
+      for elem in sorted_info:
+          # split the line into words
+          owner = info[0]
+          taken_str, country = elem
+
+          # change timestamp in string to time
+          try:
+              taken = datetime.datetime.strptime(taken_str, "%Y-%m-%d %H:%M:%S")
+          except:
+              continue
+
+          if (country == current_country):
+              end_time = taken
+          elif (country != current_country):
+              if (current_country != ""):
+                  output.append((current_owner, ((taken - start_time).total_seconds()/(24*3600), current_country)))
+              current_country = country
+              start_time = taken
+              end_time = taken
+
+      output.append((current_owner, ((end_time - start_time).total_seconds()/(24*3600), current_country)))
+
+      return output
+
+  def convert_user_stay_to_str(info):
+      user = info[0][0]
+      country = info[0][1]
+      stay_info = info[1]
+
+      return (user, "{0}({1},{2},{3},{4},{5})".format(country, len(stay_info), max(stay_info), min(stay_info), sum(stay_info)/len(stay_info), sum(stay_info)))
+
+  def extractUserPhotos(record):
+      try:
+          return (record)
+      except:
+          return()
+
+  if __name__ == "__main__":
+      sc = SparkContext(appName="Country visits per user")
+      photos = sc.textFile("/share/small/partial.txt")
+      place = sc.textFile("/share/place.txt")
+
+      # Returns location_id -> (date_taken, location_id)
+      photos_info = photos.map(extract_photos_info)
+
+      # Returns location_id -> (country)
+      place_info = place.map(extract_place_info)
+
+      # Join. (owner) -> (date_taken, country)
+      user_country_details = photos_info.join(place_info).map(lambda x: x[1]).map(lambda x: (x[0][0], (x[0][1], x[1])))
+
+      user_stay_details = user_country_details.groupByKey().flatMap(user_stay_info).map(lambda x: ((x[0], x[1][1]), x[1][0])).groupByKey().map(convert_user_stay_to_str).groupByKey().map(lambda x: "{0}\t{1}".format(x[0], ','.join(x[1])))
+
+      user_stay_details.saveAsTextFile("prelimuser")
+
+#+end_src
+
+
+Results
+7556490@N05	United+Kingdom(1,0.00239583333333,0.00239583333333,0.00239583333333,0.00239583333333)
+35386145@N05	United+States(2,773.502118056,370.153136574,571.827627315,1143.65525463),France(1,198.079502315,198.079502315,198.079502315,198.079502315)
+33100642@N05	Philippines(1,378.259178241,378.259178241,378.259178241,378.259178241),Singapore(1,0.0,0.0,0.0,0.0)
+27064648@N05	Germany(2,500.179016204,45.0573611111,272.618188657,545.236377315),Belgium(3,267.899340278,0.0,100.821134259,302.463402778)
+21577727@N05	Australia(1,181.901956019,181.901956019,181.901956019,181.901956019)
+8036172@N05	Mexico(1,909.275439815,909.275439815,909.275439815,909.275439815)
+23430468@N05	Malaysia(1,0.0,0.0,0.0,0.0)
+7755447@N05	Monaco(1,1.47583333333,1.47583333333,1.47583333333,1.47583333333),France(1,303.344131944,303.344131944,303.344131944,303.344131944)
+
+21577727@N05	Australia(1,181.901956019,181.901956019,181.901956019,181.901956019)	NULL
+23430468@N05	Malaysia(1,0.0,0.0,0.0,0.0)	NULL
+27064648@N05	Belgium(3,267.899340278,0.0,100.821134259,302.463402778),Germany(2,500.179016204,45.0573611111,272.618188657,545.236377315)	NULL
+33100642@N05	Philippines(1,378.259178241,378.259178241,378.259178241,378.259178241),Singapore(1,0.0,0.0,0.0,0.0)	NULL
+35386145@N05	France(1,198.079502315,198.079502315,198.079502315,198.079502315),United+States(2,773.502118056,370.153136574,571.827627315,1143.65525463)	NULL
+7556490@N05	United+Kingdom(1,0.00239583333333,0.00239583333333,0.00239583333333,0.00239583333333)	NULL
+7755447@N05	France(1,303.344131944,303.344131944,303.344131944,303.344131944),Monaco(1,1.47583333333,1.47583333333,1.47583333333,1.47583333333)	NULL
+8036172@N05	Mexico(1,909.275439815,909.275439815,909.275439815,909.275439815)	NULL
+
+
+21577727@N05	Australia(1,181,181,181,181)	NULL
+23430468@N05	Malaysia(1,0,0,0,0)	NULL
+27064648@N05	Belgium(3,267,0,100,301),Germany(2,500,45,272,545)	NULL
+33100642@N05	Philippines(1,378,378,378,378),Singapore(1,0,0,0,0)	NULL
+35386145@N05	France(1,198,198,198,198),United+States(2,773,370,571,1143)	NULL
+7556490@N05	United+Kingdom(1,0,0,0,0)	NULL
+7755447@N05	France(1,303,303,303,303),Monaco(1,1,1,1,1)	NULL
+8036172@N05	Mexico(1,909,909,909,909)	NULL
