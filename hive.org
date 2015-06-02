@@ -21,7 +21,31 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
   (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
   ROW FORMAT DELIMITED
   FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
-  LOCATION '/share/small/';
+  LOCATION '/user/rsiv5112/data1';
+
+  create external table if not exists rsiv5112.photos2
+  (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
+  ROW FORMAT DELIMITED
+  FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+  LOCATION '/user/rsiv5112/data2';
+
+  create external table if not exists rsiv5112.photos5
+  (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
+  ROW FORMAT DELIMITED
+  FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+  LOCATION '/user/rsiv5112/data5';
+
+  create external table if not exists rsiv5112.photos7
+  (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
+  ROW FORMAT DELIMITED
+  FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+  LOCATION '/user/rsiv5112/data7';
+
+  create external table if not exists rsiv5112.photos12
+  (photoid string, owner string, tags string, datetaken timestamp, placeid string, accuracy string)
+  ROW FORMAT DELIMITED
+  FIELDS TERMINATED BY '\t' LINES TERMINATED BY '\n'
+  LOCATION '/share/large';
 #+end_src
 
 
@@ -30,7 +54,7 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
   add file reducer.py;
   from (
   from
-  (select owner, datetaken, split(place_url,'/')[1] as country from rsiv5112.photos p join share.place q on p.placeid=q.place_id) country_data
+  (select owner, datetaken, split(place_url,'/')[1] as country from ${hiveconf:dbtable} p join share.place q on p.placeid=q.place_id) country_data
   select transform(owner, datetaken, country) using 'python identity_mapper.py'
   as (owner, date_taken, country) distribute by owner sort by owner, date_taken asc
   ) owner_info
@@ -143,6 +167,7 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
   from operator import itemgetter
   import datetime
   import time
+  import sys
 
   def extract_photos_info(line):
       (ign, owner, ign, date_taken, location_id, ign) = line.split('\t')
@@ -198,7 +223,8 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
 
   if __name__ == "__main__":
       sc = SparkContext(appName="Country visits per user")
-      photos = sc.textFile("/share/small/partial.txt")
+      if len(sys.argv) > 1:
+          photos = sc.textFile(sys.argv[1])
       place = sc.textFile("/share/place.txt")
 
       # Returns location_id -> (date_taken, location_id)
@@ -208,7 +234,7 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
       place_info = place.map(extract_place_info)
 
       # Join. (owner) -> (date_taken, country)
-      user_country_details = photos_info.join(place_info).map(lambda x: x[1]).map(lambda x: (x[0][0], (x[0][1], x[1])))
+      user_country_details = photos_info.join(place_info).map(lambda x: (x[1][0][0], (x[1][0][1], x[1][1])))
 
       user_stay_details = user_country_details.groupByKey().flatMap(user_stay_info).groupByKey().sortByKey().map(convert_user_stay_to_str).groupByKey().map(lambda x: "{0}\t{1}".format(x[0], ','.join(x[1])))
 
@@ -244,3 +270,20 @@ STORED AS TEXTFILE LOCATION '/user/rsiv5112/hiveData/owner_stay';
 45769714@N00	United+Kingdom(4,1373.0,0.0,476.0,1904.0),United+States(4,48.2,0.0,12.0,48.2)
 68226797@N00	United+States(1,174.6,174.6,174.6,174.6)
 71523911@N00	Austria(1,48.8,48.8,48.8,48.8),Czech+Republic(3,159.1,0.5,54.2,162.7),Germany(1,24.2,24.2,24.2,24.2),Italy(6,526.8,0.9,206.9,1241.4)
+
+
+Hive
+NUmber of reducers 128:
+1G =>
+Stage 1:
+   Map 15 seconds
+   Reduce  57 seconds
+   Shuffle 31 seconds
+   Total 2 Mins 9 seconds
+Stage 2:
+   Map 20 seconds
+   Shuffle
+   Reduce 1 min 36 seconds
+
+Stage-Stage-1: Map: 9  Reduce: 128   Cumulative CPU: 1465.61 sec   HDFS Read: 1237194753 HDFS Write: 494174852 SUCCESS
+Stage-Stage-2: Map: 9  Reduce: 128   Cumulative CPU: 1042.36 sec   HDFS Read: 494207133 HDFS Write: 1303210 SUCCESS

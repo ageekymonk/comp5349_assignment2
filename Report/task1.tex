@@ -1,266 +1,97 @@
 \chapter{Hive Query}
 
-	We have used the combination of map and reduce scripts in python along with hive query to achieve our goal. 
+	Query to find the max, min, total, average stay per user per country by using only Hive Query turned out to be inefficient. This is because we need to use triple join, which will be highly inefficient for big data queries. 
+	
+	To avoid this we have used Hive Query and a map reduce job to achieve our objective
 		
 \section{Design}
-	We have created 3 Jobs for solving the problem chained one after another \\
+	So we split the task into three parts \\
 	\begin{itemize}
-		\item [Job1:] creates counts the photos per locality  
-		\item [Job2:] Sorts and Give Top 50 Locality 
-		\item [Job3:] For the Top 50 Locality, Finds the top 10 tags 
+		\item [Part1:] Join Place Table and Photos Table to produce table containing \(Owner, Date Taken, Country\). \\
+		We have use Hive Query for this job because writing query for this task is simple as a SQL Query. This makes code readable for everyone. 
+		\item [Part2:] Map Job to return the content as it is but distribute by Owner and Sort it by date. 
+		For distributing and sorting we have leveraged Map reduce framework.
+		\item [Part3:] Reduce Job to Find the Max, Min, Average, Total stay per User Per Country. 
+		We used python script to do the reduce as this is simple to sequentially go through the time sorted list and find out the time a user stayed in each country. 
 	\end{itemize}
 
+\section{Lineage}
 	
-	\emph{Design Choice 1:}  Use of Distributed Cache \\
-		Since the current number of places has about 300,000 Entries and the size is about 33 MB, we have decided to use it as a distributed cache rather than running a Mapreduce job for joining the places and photos. If each Hash entry takes about 128 Bytes (Hash, String, Value) then for a million entry it would be 128 MB. Given the RAM capacity of modern machine, this approach can scale easily upto 8 Million Entries for 1G of RAM and even more. \\
-		\\
-	\emph{Design Choice 2:} Reading the Photos Data Twice \\
-	 	We implemented a map which reads the data and spits out two types output. One for tags and other for unique users. With that implementation the data output was about 20 Gigabytes. For the 80 Million entries for photos there we 700 million tags. Due to that we had huge amount of data which are useless causing lot of time in shuffling. And most of the data is useless as we are only concerned about top 50 locations. So we read the data again but only output tags for top 50 locations. This reduced timings massively.
-	 	
-	 	It also fails to scale, if your data goes into peta bytes the output generated will be 10x peta bytes which will be impossible to even store. So Reading the data twice is the right option.
+\usetikzlibrary{shapes.geometric,arrows}
 
-	Due to these optimisations, we could get the total Running time for the problem is ~ 5 Minutes.
-	
-	Our design is scalable because
-	\begin{enumerate}
-	\item We have used Combiner everywhere to make sure less shuffling 
-	\item Since we output tags only for top 50 we can scale to Petabytes still we get the best performance
-	\item We use Framework to sort for better and efficient sorting	
-	\end{enumerate}
+\tikzstyle{decision} = [ diamond, draw, fill=blue!20, text width=4.5em, text badly centered, node distance=3cm, inner sep-0pt]  
+\tikzstyle{block} = [ rectangle, draw, fill=blue!20, text width=15em, text badly centered, rounded corners, minimum height=4em]  
+\tikzstyle{line} = [ draw, -latex']  
+\tikzstyle{terminator} = [ draw, ellipse, fill=red!20, node distance=3cm, minimum height=2em]  
 
-\subsubsection{Job1}
-
-\small
-\begin{tabular}{| c | p{2cm} | p{2cm} | p{7cm} | }
-\hline 
- Segments 
- & Input 
- & Output 
- & Pseudocode \\ \hline
- 
- Mapper 
- & \scriptsize 
- 1. Cache: Place.txt \newline
- 2. Photos Data
- & \scriptsize 
-Key: PlaceName \newline
-Value: 1
- & \scriptsize 
- Setup: \newline
- 1. create HashMap with (key, value) as (placeid, Placename) \newline
- 2. For each line in Place.txt \newline
- 		HashMap[placeid] = Placename \newline
- Map: \newline
- 2. For each Text Input \newline
- 		placename = HashMap(placeid)\newline
- 		output(placename, 1) \newline
- \\ \hline
- 
- Combiner 
- & \scriptsize
-Key: PlaceName \newline
-Value: 1
-
- & \scriptsize 
-Key: PlaceName \newline
-Value: List(1)
- & \scriptsize 
- Foreach  in List(1): \newline
- 	 count = count + 1 \newline
- output(Placename, count) \newline
-  \\ \hline
- 
-  Reducer 
- & \scriptsize 
-Key: Place Name \newline
-Value: List(count) \newline
- & \scriptsize 
-Key: Place Name \newline
-Value: numPhotos \newline
- & \scriptsize 
- Foreach count in List(count): \newline
- 	 numPhotos = numPhotos + count \newline
- output(Placename, numPhotos) \newline
- \\ \hline
- 
-\end{tabular}
-
-
-\subsubsection{Job2}
-
-
-\small
-\begin{tabular}{| c | p{3cm} | p{3cm} | p{5cm} | }
-\hline 
- Segments 
- & Input 
- & Output 
- & Comments \\ \hline
- 
- Mapper 
- & \scriptsize
-Key: placename \newline
-Value: numPhotos \newline
- & \scriptsize 
-Key: numPhotos \newline
-Value: Placename \newline
-& \scriptsize
-For Each Key, Value \newline
-	output(Value, Key) \newline
- \\ \hline
- 
-Sorter 
-& \multicolumn{2}{ |c| }{ Sort in Reverse Order }
-& \scriptsize Extend Writablecomparable to reverse sort the integer and pass it to the driver. 
-  \\ \hline
- 
-  Reducer 
- & \scriptsize 
-Key: numPhotos \newline
-Value: Place Name \newline
- & \scriptsize 
-Key: Place Name \newline
-Value:  numPhotos \newline
- & \scriptsize 
-For first 50: Key and Value \newline
-	Output(value, key) \newline
- \\ \hline
-\end{tabular}
-
-
-\subsubsection{Job3}
-	We implemented the Job3 into two different jobs one which counts and other sorts and the perfomance was worse than the current implementation. 
-		
-	We find it unnecessary because the scale of data which is very minimal. Below is the statistics for the given data \newline
-	Total Tags = 700 Million \newline
-	Top 50 Location Tags = 140 Million\newline
-	After combiner = 13 Million\newline
-	Total Groups = 5 Million\newline
-	We can have as much as 50 Reducers to parallelize \newline
-	Reducer Load = 0.1 Million  \newline
-
-	Block Size of 128 MB ~= 	10 Million Groups\newline
-	This job should be able to process data in Tera Byte scale easily.  \newline
-
-\bgroup
-\scriptsize
-\begin{tabular}{| c | p{3cm} | p{3cm} | p{5cm} | }
-\hline 
- \textbf{Segments}
- & \textbf{Input}
- & \textbf{Output} 
- & \textbf{Pseudocode} \\ \hline
- 
- Mapper 
- & 
- Cache1: Place.txt
- Cache2: Top 50 Places
- & 
-Key: (PlaceName, Tag)
-Value: 1
-& 
- \textbf{Setup:} \newline
- 1. create HashMap with (key, value) as (placeid, Placename) \newline
- 2. For each line in Place.txt \newline
- 		HashMap[placeid] = Placename \newline
-\textbf{Map} \newline
-1. For each Photo: \newline
-	if Place is in Top 50 Places then \newline
-		Output( (PlaceName, Tag), 1) \newline
- \\ \hline
-
- Combiner 
- & 
-Key: (PlaceName, Tag)
-Value: 1
- & 
-Key: (PlaceName, Tag)
-Value: (tagcount)
-& 
- Foreach count in List(count): \newline
- 	 tagcount = tagcount + count \newline
- Output( (PlaceName,Tag), tagcount) \newline
- \\ \hline 
- 
- Partitioner 
-&
-\multicolumn{3}{ |c| }{ Partition based on Place Name} \\
-  \\ \hline
-
-  Reducer 
- & 
-Key: (PlaceName, Tag)
-Value: (tagcount)
- & 
- PlaceName \t numberOfPhotos \t (tag:freq)+
- & 
- \textbf{Reduce:} \newline
- For each key, List(tagcount): \newline
- 	totaltagcount = totaltagcount + tagcount \newline
-  If totaltagcount > one of top 10 tags for the place \newline
- 	add to top 10 tags \newline
- else \newline
- 	ignore tags \newline
- 	
- \textbf{cleanup:} \newline
- 	For each place: \newline
- 		output(PlaceName \t numberOfPhotos \t (tag:freq)+) \newline
-
- \\ \hline
-\end{tabular}
-\egroup
-
+\begin{tikzpicture}[node distance=3cm, auto]   
+  \node [block]  (place)  {Place};  
+  \node [block, below of=place]  (place_map) {LocId - 	\textgreater Country};  
+  
+  \node [block, right of=place, xshift=5cm]  (photo)  {Photo};
+  \node [block, below of=photo]  (photo_map) {LocId -\textgreater (Owner, Date)};  
+  
+  \node [block, below of=photo_map] (join) {LocId -\textgreater ((Owner,Date), Country)};
+  
+  \node [block, below of=join] (join_map) {(Owner, (Date, Country))};
+  
+  \node [block, below of=join_map] (group_by_owner) {Owner -\textgreater [(Date, Country), ... ]};
+  \node [block, below of=group_by_owner] (flatmap_owner) {(Owner, Country) -\textgreater Days};
+  
+  \node [block, below of=flatmap_owner] (grpby_owner_country) {group by country owner};
+  
+  \node [block, below of=grpby_owner_country] (sort_by_owner_country) {sort by owner country};
+  \node [block, below of=sort_by_owner_country] (map_by_owner) {map by owner};
+  
+  \path [line] (place)  -- node {map} (place_map) ;  
+  \path [line] (photo) -- node {map} (photo_map); 
+  
+  \path [line] (photo_map) -- node {join} (join);
+  \path [line] (place_map) -- node {join} (join);
+  
+  \path [line] (join) -- node {map} (join_map);
+  \path [line] (join_map) -- node {group by} (group_by_owner);
+  \path [line] (group_by_owner) -- node {flat map} (flatmap_owner);
+  
+\end{tikzpicture}
+    
 \section{Performance}
 
-For a highly scalable Map Reduce Job we need to make sure the following parameters are minimized
-	\begin{enumerate}
-	\item Time Taken for a  Map Task
-	\item Time Taken for Shuffling
-	\item Time Taken for a Reduce Task
-	\end{enumerate}
-	
-	Higher the number of shuffle bytes, more the time for reduce task. So knowing where the time is more gives us better idea to optimize the solutions.	
-	
-	Below is our performance graph for our implementation. On X-Axis is the Input Size and on Y-Axis is Total Time taken by all mapper or Reducer. We have plotted both Mapper, Reducer, Mapper + Reducer. Due to our design the amount of work done in reducer is very minimal. 
-	
-	The overall running time is less than 5 Minutes, given we have enough Mapper task to run in parallel. 
-	
 \begin{tikzpicture}
     \begin{axis}[
         xlabel=$DataSize$,
-        ylabel=$TotalTime(in_seconds)$]
+        ylabel=$TimeTaken(inSeconds)$]
     \addplot[smooth,mark=*,blue] plot coordinates {
-        (10, 7035)
-        (7.1,4885)
-        (5,3104)
-        (3, 1987)
-        (2.3,1359)
-        (1.0, 406)
+        (10,3662)
+        (7.1,2607)
+        (5,1707)
+        (3, 1121)
+        (2.3,890)
+        (1.0, 243)
     };
     \addlegendentry{Mapper}
 
     \addplot[smooth,color=red,mark=x]
         plot coordinates {
-            (10,230)
-            (7.1,159)
-            (5, 86)
-            (3, 85)            
-            (2.3,88)
-            (1.0,56)
+            (10,468)
+            (7.1,316)
+            (5,148)
+            (3,171)            
+            (2.3,188)
+            (1.0,102)
         };
-		\addlegendentry{Reducer}
-		
-	    \addplot[smooth,color=green,mark=x]
-        plot coordinates {
-            (10,7265)
-            (7.1,5044)
-            (5, 3190)
-            (3, 2072)            
-            (2.3,1447)
-            (1.0,462)
-        };    
+    \addlegendentry{Reducer}
     
-    	\addlegendentry{Total}
+    \addplot[smooth,color=green,mark=x]
+        plot coordinates {
+            (10,4130)
+            (7.1,2923)
+            (5, 1855)
+            (3,1292)            
+            (2.3,1078)
+            (1.0,345)
+        };
+    \addlegendentry{Total}    
+    
     \end{axis}
     \end{tikzpicture}
-    
